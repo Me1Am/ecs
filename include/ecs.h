@@ -29,7 +29,7 @@ typedef struct ECSInstance ECSInstance;
 /// Initializes an ECS instance
 ECSInstance* ecs_init();
 /// Adds a component to an entity and moves the entity to the respective archetype
-void add_component(ECSInstance* instance, EntityId entity, ComponentId component);
+int add_component(ECSInstance* instance, EntityId entity, ComponentId component);
 /// Similar to add_component, but uses the remove edge
-void remove_component(ECSInstance* instance, EntityId entity, ComponentId component);
+int remove_component(ECSInstance* instance, EntityId entity, ComponentId component);
 void* get_component(ECSInstance* instance, EntityId entity, ComponentId component);

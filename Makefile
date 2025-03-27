@@ -9,7 +9,7 @@ SRC := src
 INC := include
 BUILD := build
 BIN := bin
-EXT_INC := klib
+EXT_INC := klib khashl
 
 # Target Executable
 TARGET := $(BIN)/main
