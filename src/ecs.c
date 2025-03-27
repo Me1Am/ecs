@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "../khashl/khashl.h"
 #include "../klib/kvec.h"
@@ -40,8 +41,8 @@ struct Record {
 };
 
 typedef kvec_t(ComponentId) VecComponentId;
-khint_t uint64_vec_hash(VecComponentId vec);
-khint_t uint64_vec_compare(VecComponentId a, VecComponentId b);
+khint_t uint64_vec_hash(VecComponentId vec) { return kh_hash_bytes(vec.n, (uint8_t*)vec.a); }
+khint_t uint64_vec_compare(VecComponentId a, VecComponentId b) { return (a.n == b.n) ? (memcmp(a.a, b.a, a.n) == 0) : 0; }
 
 ///
 /// ECS instance and related type definitions
@@ -55,7 +56,7 @@ KHASHL_MAP_INIT(KH_LOCAL, archetype_map_t, archetype_map, VecComponentId, Archet
 // Maps ArchetypeId to a column (size_t)
 // Used to find a component's column in a given archetype that it is a part of
 // Used in component_index
-KHASHL_MAP_INIT(KH_LOCAL, component_column_map_t, component_column_map, uint64_t, size_t, kh_hash_uint32, kh_eq_generic)
+KHASHL_MAP_INIT(KH_LOCAL, component_column_map_t, component_column_map, uint64_t, size_t, kh_hash_uint64, kh_eq_generic)
 // Maps ComponentId to kh_component_columns_t
 // Used to get the various archetypes that the given component is a part of
 KHASHL_MAP_INIT(KH_LOCAL, component_map_t, component_map, uint64_t, component_column_map_t, kh_hash_uint64, kh_eq_generic)
@@ -104,7 +105,7 @@ ECSInstance* ecs_init() {
 int add_component(ECSInstance* instance, EntityId entity, ComponentId component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
     if(iter == kh_end(instance->entity_index)) {
-        return 1;
+        return 0;
     }
     Record record = kh_val(instance->entity_index, iter);
 
@@ -112,13 +113,13 @@ int add_component(ECSInstance* instance, EntityId entity, ComponentId component)
     Archetype* next_archetype = kh_val_unsafe(edge_map, &archetype->edges, component).add;
 
     move_entity(instance, archetype, next_archetype, record.index);
-    return 0;
+    return 1;
 }
 /// The same as add, but uses the remove edge
 int remove_component(ECSInstance* instance, EntityId entity, ComponentId component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
     if(iter == kh_end(instance->entity_index)) {
-        return 1;
+        return 0;
     }
     Record record = kh_val(instance->entity_index, iter);
 
@@ -126,7 +127,7 @@ int remove_component(ECSInstance* instance, EntityId entity, ComponentId compone
     Archetype* prev_archetype = kh_val_unsafe(edge_map, &archetype->edges, component).remove;
 
     move_entity(instance, archetype, prev_archetype, record.index);
-    return 0;
+    return 1;
 }
 
 void* get_component(ECSInstance* instance, EntityId entity, ComponentId component) {
@@ -142,5 +143,4 @@ void* get_component(ECSInstance* instance, EntityId entity, ComponentId componen
     size_t a_record = kh_val_unsafe(component_column_map, &archetypes, archetype->id);
     //return archetype->components[a_record].elements[record->index];
     exit(1);
-    return NULL;
 }
