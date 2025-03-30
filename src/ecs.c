@@ -54,9 +54,9 @@ struct Record {
     size_t index;   // ie. row
 };
 
-khint_t uint64_vec_hash(VecComponentId vec) { return kh_hash_bytes(vec.n, (uint8_t*)vec.a); }
-khint_t uint64_vec_compare(VecComponentId a, VecComponentId b) { return (a.n == b.n) ? (memcmp(a.a, b.a, a.n) == 0) : 0; }
-static inline int uint64_compare(const void *a, const void *b) {
+khint_t uint64_vec_hash(const VecComponentId vec) { return kh_hash_bytes(vec.n, (uint8_t*)vec.a); }
+khint_t uint64_vec_compare(const VecComponentId a, const VecComponentId b) { return (a.n == b.n) ? (memcmp(a.a, b.a, a.n) == 0) : 0; }
+static inline int uint64_compare(const void* a, const void* b) {
     uint64_t ua = *(const uint64_t *)a;
     uint64_t ub = *(const uint64_t *)b;
     return (ua > ub) - (ua < ub); // Returns -1, 0, or 1
@@ -101,12 +101,12 @@ struct ECSInstance {
 /// Internal Function Implementations
 ///
 /// Moves an entity at row `index` from `src` to `dest`
-void move_entity(ECSInstance* instance, Archetype* src, Archetype* dest, size_t index) {
+void move_entity(ECSInstance* instance, Archetype* src, Archetype* dest, const size_t index) {
 
 }
 /// Create a new Archetype for `type` components
 /// Assumes `type` is sorted
-Archetype* archetype_create(ECSInstance instance[static 1], VecComponentId type[static 1]) {
+Archetype* archetype_create(ECSInstance* instance, const VecComponentId* type) {
     Archetype* archetype = malloc(sizeof(Archetype));
     if (archetype == NULL)
         return NULL;
@@ -117,18 +117,20 @@ Archetype* archetype_create(ECSInstance instance[static 1], VecComponentId type[
     kv_init(archetype->components);
 
     // Initialize component storage
-    for (size_t i = 0; i < archetype->type.n; i++) {
-        Column column;
-        column.elements = malloc(0);
-        column.element_size = sizeof(uint64_t);  // TODO: Get actual component size
-        column.count = 0;
+    for(size_t i = 0; i < archetype->type.n; i++) {
+        Column column = (Column) {
+            .elements = malloc(0),
+            .element_size = sizeof(uint64_t),   // TODO: Get actual component size
+            .count = 0
+        };
+
         kv_push(Column, archetype->components, column);
     }
 
     // Add new archetype to the global archetype index
     int ret;
     khint_t iter = archetype_map_put(instance->archetype_index, archetype->type, &ret);
-    if (ret == 0) {
+    if(ret == 0) {
         free(archetype);
         return NULL;
     }
@@ -151,10 +153,22 @@ ECSInstance* ecs_init() {
     instance->archetype_index = archetype_map_init();
     instance->component_index = component_map_init();
 
-    return (instance->entity_index && instance->component_index) ? instance : NULL;
+    if(instance->entity_index && instance->archetype_index && instance->component_index)
+        return instance;
+
+    // Free memory
+    if(instance->entity_index)
+        entity_map_destroy(instance->entity_index);
+    if(instance->archetype_index)
+        archetype_map_destroy(instance->archetype_index);
+    if(instance->component_index)
+        component_map_destroy(instance->component_index);
+    free(instance);
+
+    return NULL;
 }
 /// Moves an entity based on the archetype specified in the add edge for `component`
-int add_component(ECSInstance* instance, EntityId entity, ComponentId component) {
+int add_component(ECSInstance* instance, const EntityId entity, const ComponentId component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
     if(iter == kh_end(instance->entity_index)) {
         return 0;
@@ -183,7 +197,7 @@ int add_component(ECSInstance* instance, EntityId entity, ComponentId component)
     return 1;
 }
 /// The same as add, but uses the remove edge
-int remove_component(ECSInstance* instance, EntityId entity, ComponentId component) {
+int remove_component(ECSInstance* instance, const EntityId entity, const ComponentId component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
     if(iter == kh_end(instance->entity_index)) {
         return 0;
@@ -215,7 +229,7 @@ int remove_component(ECSInstance* instance, EntityId entity, ComponentId compone
     return 1;
 }
 
-void* get_component(ECSInstance* instance, EntityId entity, ComponentId component) {
+void* get_component(ECSInstance* instance, const EntityId entity, const ComponentId component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
     if(iter == kh_end(instance->entity_index)) {
         return NULL;
