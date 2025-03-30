@@ -1,3 +1,4 @@
+#include <complex.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -13,6 +14,20 @@
 /// Performs no bounds checks
 #define kh_val_unsafe(name, h, key) kh_val(h, name##_get(h, key))
 
+/// Remove an element within a kvec
+/// Preserves the numerical order (deletes, then shifts)
+/// Performs no bounds checks on `index`
+#define kv_rm_at(vec, index) do {                                       \
+        if((index) < kv_size(vec)) {                                    \
+            memmove(&kv_A(vec, index),                                  \
+                    &kv_A(vec, (index) + 1),                            \
+                    (kv_size(vec) - (index) - 1) * sizeof(*(vec).a));   \
+            kv_size(vec)--;                                             \
+        }                                                               \
+    } while (0)
+
+
+
 struct ArchetypeEdge {
     Archetype* add;
     Archetype* remove;
@@ -22,11 +37,15 @@ struct ArchetypeEdge {
 KHASHL_MAP_INIT(KH_LOCAL, edge_map_t, edge_map, uint64_t, ArchetypeEdge, kh_hash_uint64, kh_eq_generic)
 typedef edge_map_t EdgeMap;
 
+typedef kvec_t(Column) VecColumn;
+typedef kvec_t(uint64_t) vec_uint64_t;
+typedef vec_uint64_t VecComponentId;
+
 struct Archetype {
-    ArchetypeId id;
-    ComponentId* type;    // Vector of component ids contained in this archetype
-    Column* components;   // Vector of components for each component
-    EdgeMap edges;
+    ArchetypeId id;         // The hash of `type`
+    VecComponentId type;    // Vector of component ids contained in this archetype
+    VecColumn components;   // Vector of components for each component
+    EdgeMap* edges;         // Stores add/remove archetypes for every ComponentId in this archetype
 };
 
 struct Column {
@@ -40,9 +59,13 @@ struct Record {
     size_t index;   // ie. row
 };
 
-typedef kvec_t(ComponentId) VecComponentId;
 khint_t uint64_vec_hash(VecComponentId vec) { return kh_hash_bytes(vec.n, (uint8_t*)vec.a); }
 khint_t uint64_vec_compare(VecComponentId a, VecComponentId b) { return (a.n == b.n) ? (memcmp(a.a, b.a, a.n) == 0) : 0; }
+static inline int uint64_compare(const void *a, const void *b) {
+    uint64_t ua = *(const uint64_t *)a;
+    uint64_t ub = *(const uint64_t *)b;
+    return (ua > ub) - (ua < ub); // Returns -1, 0, or 1
+}
 
 ///
 /// ECS instance and related type definitions
@@ -86,6 +109,54 @@ struct ECSInstance {
 void move_entity(ECSInstance* instance, Archetype* src, Archetype* dest, size_t index) {
 
 }
+/// Create a new Archetype for `type` components
+Archetype* archetype_create(ECSInstance instance[static 1], VecComponentId type[static 1], EdgeMap* existing_edges) {
+    Archetype* archetype = malloc(sizeof(Archetype));
+    if (archetype == NULL)
+        return NULL;
+
+    // Initialize type vector
+    kv_init(archetype->type);
+    kv_copy(uint64_t, archetype->type, *type);
+    qsort(archetype->type.a, archetype->type.n, sizeof(uint64_t), uint64_compare);
+    kv_init(archetype->components);
+
+    // Initialize component storage
+    for (size_t i = 0; i < archetype->type.n; i++) {
+        Column column;
+        column.elements = malloc(0);
+        column.element_size = sizeof(uint64_t);  // TODO: Get actual component size
+        column.count = 0;
+        kv_push(Column, archetype->components, column);
+    }
+
+    // Initialize edge map
+    archetype->edges = edge_map_init();
+
+    // If an existing edge map is provided, copy its contents
+    if (existing_edges) {
+        khint_t iter;   // The index in the hash table
+        kh_foreach(existing_edges, iter) {
+            // Copy the old [key,val] into the new hashmap
+            int ret;
+            khint_t iter2 = edge_map_put(archetype->edges, kh_key(existing_edges, iter), &ret);
+            kh_val(archetype->edges, iter2) = kh_val(existing_edges, iter);
+        }
+    }
+
+    // Add new archetype to the global archetype index
+    int ret;
+    khint_t iter = archetype_map_put(instance->archetype_index, archetype->type, &ret);
+    if (ret == 0) {
+        free(archetype);
+        return NULL;
+    }
+    kh_val(instance->archetype_index, iter) = *archetype;
+
+    return archetype;
+}
+
+
 
 ///
 /// External Function Implementations
@@ -110,7 +181,32 @@ int add_component(ECSInstance* instance, EntityId entity, ComponentId component)
     Record record = kh_val(instance->entity_index, iter);
 
     Archetype* archetype = record.archetype;
-    Archetype* next_archetype = kh_val_unsafe(edge_map, &archetype->edges, component).add;
+    Archetype* next_archetype;
+
+    iter = edge_map_get(archetype->edges, component);
+    if(iter == kh_end(archetype->edges)) {
+        // Copy existing component list and add new component
+        VecComponentId new_type;
+        kv_init(new_type);
+        kv_copy(uint64_t, new_type, archetype->type);
+        kv_push(uint64_t, new_type, component);
+        qsort(new_type.a, new_type.n, sizeof(uint64_t), uint64_compare);
+
+        // Create new archetype
+        next_archetype = archetype_create(instance, &new_type, NULL);
+
+        // Store new archetype in edge map
+        int ret;
+        iter = edge_map_put(archetype->edges, component, &ret);
+        ArchetypeEdge* edge = &kh_val(archetype->edges, iter);
+
+        edge->add = next_archetype; // If another component (of this type) is added, go to `next_archetype`
+        edge->remove = archetype;   // If this component is removed later, go back here
+
+        kv_destroy(new_type);
+    } else {
+        next_archetype = kh_val(archetype->edges, iter).add;
+    }
 
     move_entity(instance, archetype, next_archetype, record.index);
     return 1;
@@ -124,9 +220,39 @@ int remove_component(ECSInstance* instance, EntityId entity, ComponentId compone
     Record record = kh_val(instance->entity_index, iter);
 
     Archetype* archetype = record.archetype;
-    Archetype* prev_archetype = kh_val_unsafe(edge_map, &archetype->edges, component).remove;
+    Archetype* next_archetype;
 
-    move_entity(instance, archetype, prev_archetype, record.index);
+    iter = edge_map_get(archetype->edges, component);
+    if(iter == kh_end(archetype->edges)) {
+        // Copy existing component list and remove the old component
+        VecComponentId new_type;
+        kv_init(new_type);
+        kv_copy(uint64_t, new_type, archetype->type);
+        kv_push(uint64_t, new_type, component);
+        khint_t i;
+        for(i = 0; i < kv_size(new_type); i++) {
+            if(kv_A(new_type, i) == component)
+                break;
+        }
+        kv_rm_at(new_type, i);
+
+        // Create new archetype
+        next_archetype = archetype_create(instance, &new_type, NULL);
+
+        // Store new archetype in edge map
+        int ret;
+        iter = edge_map_put(archetype->edges, component, &ret);
+        ArchetypeEdge* edge = &kh_val(archetype->edges, iter);
+
+        edge->add = archetype;          // If another component (of this type) is added, go back to `archetype`
+        edge->remove = next_archetype;  // If another component (of this type) is removed, go to `next_archetype`
+
+        kv_destroy(new_type);
+    } else {
+        next_archetype = kh_val(archetype->edges, iter).remove;
+    }
+
+    move_entity(instance, archetype, next_archetype, record.index);
     return 1;
 }
 

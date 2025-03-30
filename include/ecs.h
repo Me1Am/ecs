@@ -1,4 +1,9 @@
 #include <stdint.h>
+#include <limits.h>
+
+
+
+#define INVALID_ID ULONG_MAX
 
 
 
@@ -8,7 +13,6 @@
 
 typedef uint64_t ArchetypeId;
 typedef uint64_t ComponentId;
-typedef uint64_t EntityId;
 typedef ArchetypeId* ArchetypeSet;  // unordered_set<ArchetypeId>
 
 // Type used to store an array of an unknown component
@@ -23,9 +27,24 @@ typedef struct Record Record;
 typedef struct ECSInstance ECSInstance;
 
 
+
+///
+/// EntityId Definitions
+///
+
+/// Entity identifier, split into the following format
+/// |  Low  |      High     |
+/// | 00-31 | 32-47 | 48-63 |
+/// |  eID  |  Gen  | Flags |
+typedef uint64_t EntityId;
+#define ENTITY_ID(id) ((uint32_t)(id))
+#define ENTITY_GENERATION(id) ((uint16_t)((id) >> 32))
+#define ENTITY_FLAGS(id) ((uint16_t)((id) >> 48))
+
 ///
 /// Functions
 ///
+
 /// Initializes an ECS instance
 ECSInstance* ecs_init();
 /// Adds a component to an entity and moves the entity to the respective archetype
