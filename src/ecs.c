@@ -47,6 +47,7 @@ struct Column {
     void* elements;      // buffer with component data
     size_t element_size; // size of a single element
     size_t count;        // number of elements
+    size_t allocated;    // number of allocated elements
 };
 
 struct Record {
@@ -100,9 +101,37 @@ struct ECSInstance {
 ///
 /// Internal Function Implementations
 ///
-/// Moves an entity at row `index` from `src` to `dest`
-void move_entity(ECSInstance* instance, Archetype* src, Archetype* dest, const size_t index) {
 
+/// Moves an entity at row `index` from `src` to `dest`
+int move_entity(ECSInstance* instance, const EntityId entity, Archetype* src, Archetype* dest) {
+    for(size_t i = 0; i < kv_size(dest->components); i++) {
+        if(kv_A(src->type, i) == kv_A(dest->type, i)) {
+            if(dest->components.a[i].count == dest->components.a[i].allocated){
+                void* temp = realloc(
+                    dest->components.a[i].elements,
+                    dest->components.a[i].allocated * 2 * dest->components.a[i].element_size
+                );
+                if(temp == NULL)
+                    return 0;
+
+                dest->components.a[i].elements = temp;
+                dest->components.a[i].allocated *= 2;
+            }
+
+            memcpy(
+                (uint8_t*)dest->components.a[i].elements + (dest->components.a[i].count++ * dest->components.a[i].element_size),
+                (uint8_t*)src->components.a[i].elements + (i * src->components.a[i].element_size),
+                src->components.a[i].element_size
+            );
+        }
+    }
+
+    // Update the entity's record
+    Record* record = &kh_val_unsafe(entity_map, instance->entity_index, entity);
+    record->archetype = dest;
+    record->index = dest->components.a[0].count - 1;
+
+    return 1;
 }
 /// Create a new Archetype for `type` components
 /// Assumes `type` is sorted
@@ -144,6 +173,7 @@ Archetype* archetype_create(ECSInstance* instance, const VecComponentId* type) {
 ///
 /// External Function Implementations
 ///
+
 ECSInstance* ecs_init() {
     ECSInstance* instance = malloc(sizeof(ECSInstance));
     if(instance == NULL)
@@ -173,8 +203,8 @@ int add_component(ECSInstance* instance, const EntityId entity, const ComponentI
     if(iter == kh_end(instance->entity_index)) {
         return 0;
     }
-    Record record = kh_val(instance->entity_index, iter);
-    Archetype* archetype = record.archetype;
+    Record* record = &kh_val(instance->entity_index, iter);
+    Archetype* archetype = record->archetype;
 
     // Get the new component list
     VecComponentId new_type;
@@ -190,11 +220,9 @@ int add_component(ECSInstance* instance, const EntityId entity, const ComponentI
         next_archetype = archetype_create(instance, &new_type);
     else
         next_archetype = &kh_val(instance->archetype_index, iter);
-
-    move_entity(instance, archetype, next_archetype, record.index);
-
     kv_destroy(new_type);
-    return 1;
+
+    return move_entity(instance, entity, archetype, next_archetype);
 }
 /// The same as add, but uses the remove edge
 int remove_component(ECSInstance* instance, const EntityId entity, const ComponentId component) {
@@ -222,11 +250,9 @@ int remove_component(ECSInstance* instance, const EntityId entity, const Compone
         next_archetype = archetype_create(instance, &new_type);
     else
         next_archetype = &kh_val(instance->archetype_index, iter);
-
-    move_entity(instance, archetype, next_archetype, record.index);
-
     kv_destroy(new_type);
-    return 1;
+
+    return move_entity(instance, entity, archetype, next_archetype);
 }
 
 void* get_component(ECSInstance* instance, const EntityId entity, const ComponentId component) {
@@ -238,8 +264,7 @@ void* get_component(ECSInstance* instance, const EntityId entity, const Componen
 
     Archetype* archetype = record.archetype;
     ArchetypeMap archetypes = kh_val_unsafe(component_map, instance->component_index, component);
-
     size_t a_record = kh_val_unsafe(component_column_map, &archetypes, archetype->id);
-    //return archetype->components[a_record].elements[record->index];
-    exit(1);
+
+    return (uint8_t*)archetype->components.a[a_record].elements + (record.index * archetype->components.a[a_record].element_size);
 }
