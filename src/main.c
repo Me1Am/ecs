@@ -1,17 +1,35 @@
 #include <stdio.h>
 
-#include "../klib/kvec.h"
+#include "ecs.h"
+
+
+
+typedef struct { float x,y; } pos_comp;
 
 int main(int argc, char** argv) {
-    kvec_t(int) components;
-    kv_init(components);
+    ecs_instance* world = ecs_init();
+    entity_id e0 = create_entity(world);
 
-    int i;
-    for(i = 0; i < 128; i++)
-        kv_push(int, components, 128-i);
+    COMPONENT_REGISTER(world, pos_comp);
+    component_id c0 = comp_id(world, pos_comp);
+    printf("%lu\n", c0);
 
-    for(i = 0; i < kv_size(components); i++)
-        printf("%d: %d\n", i, kv_A(components, i));
+    int ret = add_component(world, e0, c0);
+    if(ret == 0) {
+        fprintf(stderr, "Unable to add component\n");
+        return 0;
+    }
+    printf("Success!! %i\n", ret);
+
+    {
+        pos_comp* comp = (pos_comp*) get_component(world, e0, c0);
+        *comp = (pos_comp) { 1.f, 112415.f };
+    }
+
+    pos_comp* comp = (pos_comp*) get_component(world, e0, c0);
+    printf("%f, %f\n", comp->x, comp->y);
+
+
 
     return 0;
 }
