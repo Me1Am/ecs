@@ -87,7 +87,7 @@ KHASHL_MAP_INIT(KH_LOCAL, component_map_t, component_map, uint64_t, component_co
 // Used with user component actions
 KHASHL_MAP_INIT(KH_LOCAL, component_name_map_t, component_name_map, const char*, uint64_t, kh_hash_str, kh_eq_str)
 
-typedef component_column_map_t archetype_map;
+typedef component_column_map_t component_archetypes;
 
 struct ecs_instance_t {
     // Global entity tracker, key is EntityId
@@ -170,7 +170,7 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
         // Add new archetype to the component's column map
         int absent;
         khint_t key = component_map_put(instance->component_index, kv_A(temp->type, i), &absent);
-        component_column_map_t* column_map = &kh_val(instance->component_index, key); // TODO Fix this stupid ass code too
+        component_column_map_t* column_map = &kh_val(instance->component_index, key);
 
         key = component_column_map_put(column_map, temp->id, &absent);
         kh_val(column_map, key) = i;
@@ -204,8 +204,17 @@ void register_component(ecs_instance* instance, const char* component_name) {
 
     // Create a column map for the component
     key = component_map_put(instance->component_index, comp_id, &absent);
-    component_column_map_t* column_map = component_column_map_init();
-    kh_val(instance->component_index, key) = *column_map; // TODO Make this stupid ass code better (memory leak)
+    component_column_map_t* column_map = &kh_val(instance->component_index, key);
+    *column_map = (component_column_map_t) { .km = NULL, .bits = 0, .count = 0, .used = NULL, .keys = NULL };
+
+    /* TODO Add these to a delete component function and check if this is accurate
+     key = component_map_get(instance->component_index, comp_id);
+     if(key != kh_end(instance->component_index)) {
+         free(column_map->used);
+         free(column_map->keys);
+         component_map_del(instance->component_index, key);
+     }
+    */
 }
 
 component_id get_component_id(ecs_instance* instance, const char* component_name) {
@@ -327,9 +336,8 @@ void* get_component(ecs_instance* instance, const entity_id entity, const compon
     record record = kh_val(instance->entity_index, iter);
 
     archetype* archetype = record.archetype;
-    archetype_map archetypes =
-        kh_val_unsafe(component_map, instance->component_index, component); // TODO Fix this stupid ass code too
-    size_t col = kh_val_unsafe(component_column_map, &archetypes, archetype->id);
+    component_archetypes* archetypes = &kh_val_unsafe(component_map, instance->component_index, component);
+    size_t col = kh_val_unsafe(component_column_map, archetypes, archetype->id);
 
     column* comp_col = &kv_A(archetype->components, col);
     void* comp = (uintptr_t*) comp_col + (record.index * comp_col->element_size);
