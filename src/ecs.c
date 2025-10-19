@@ -102,6 +102,8 @@ struct ecs_instance_t {
 
     // Global component name map, key is component typenames (const char*)
     component_name_map_t* component_names;
+
+    vec_uint64_t id_graveyard;
 };
 
 
@@ -215,6 +217,7 @@ ecs_instance* ecs_init() {
     instance->archetype_index = archetype_map_init();
     instance->component_index = component_map_init();
     instance->component_names = component_name_map_init();
+    kv_init(instance->id_graveyard);
 
     if(instance->entity_index && instance->archetype_index && instance->component_index && instance->component_names)
         return instance;
@@ -239,8 +242,7 @@ void ecs_destroy(ecs_instance* instance) {
     entity_map_destroy(instance->entity_index);
 
     khint_t key;
-    kh_foreach(instance->archetype_index, key)
-        archetype_destroy(kh_val(instance->archetype_index, key));
+    kh_foreach(instance->archetype_index, key) archetype_destroy(kh_val(instance->archetype_index, key));
     archetype_map_destroy(instance->archetype_index);
 
     kh_foreach(instance->component_index, key) {
@@ -251,6 +253,8 @@ void ecs_destroy(ecs_instance* instance) {
     component_map_destroy(instance->component_index);
 
     component_name_map_destroy(instance->component_names);
+
+    kv_destroy(instance->id_graveyard);
 
     free(instance);
 }
@@ -264,15 +268,16 @@ component_id ecs_component_id(ecs_instance* instance, const char* component_name
 /// Add an entity to the world and returns its ID
 entity_id ecs_entity_create(ecs_instance* instance) {
     fprintf(stderr, "ERROR: \"ecs_entity_create\" NOT IMPLEMENTED\n");
-    entity_id eid = 0;
+    entity_id eid;
+    if(kv_size(instance->id_graveyard) > 0)
+        eid = kv_pop(instance->id_graveyard);
+    else
+        eid = 0;
 
     // TODO Finish implementation
     int absent;
     entity_map_put(instance->entity_index, eid, &absent);
-    if(!absent) {
-        fprintf(stderr, "ERROR: Entity \"%u\" already exists\n", ecs_id(eid));
-        return 1;
-    }
+
     // TODO Add to an 'empty' archetype
     kh_val(instance->entity_index, eid) = (record) { NULL, 0 };
 
@@ -289,6 +294,10 @@ entity_id ecs_entity_copy(ecs_instance* instance, entity_id src) {
 }
 void ecs_entity_destroy(ecs_instance* instance, entity_id entity) {
     fprintf(stderr, "ERROR: \"ecs_entity_destroy\" NOT IMPLEMENTED");
+
+    entity &= 0xFFFFFFFF00000000;   // Reset flags
+    ecs_id_gen_set(entity, ecs_id_gen(entity) + 1);
+    kv_push(entity_id, instance->id_graveyard, entity);
 }
 
 void ecs_component_register(ecs_instance* instance, const char* component_name, size_t size) {
