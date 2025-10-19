@@ -18,12 +18,12 @@
 /// Remove an element within a kvec
 /// Preserves the numerical order (deletes, then shifts)
 /// Performs no bounds checks on `index`
-#define kv_rm_at(vec, index)                                                                                      \
-    do {                                                                                                          \
-        if((index) < kv_size(vec)) {                                                                              \
-            memmove(&kv_A(vec, index), &kv_A(vec, (index) + 1), (kv_size(vec) - (index) - 1) * sizeof(*(vec).a)); \
-            kv_size(vec)--;                                                                                       \
-        }                                                                                                         \
+#define kv_rm_at(vec, index)                                                                                        \
+    do {                                                                                                            \
+        if((index) < kv_size(vec)) {                                                                                \
+            memmove(&kv_A(vec, (index)), &kv_A(vec, (index) + 1), (kv_size(vec) - (index) - 1) * sizeof(*(vec).a)); \
+            kv_size(vec)--;                                                                                         \
+        }                                                                                                           \
     } while(0)
 
 
@@ -40,6 +40,7 @@ typedef vec_uint64_t vec_component_id;
 struct archetype_t {
     archetype_id id;       // The hash of `type`
     vec_component_id type; // Vector of component ids contained in this archetype
+    vec_uint64_t entities; // Vector of entity ids contained in this archetype, indicies correspond with row indicies
     vec_column components; // Vector of components for each component
 };
 
@@ -138,10 +139,12 @@ int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, 
         }
     }
 
-    // Update the entity's record
     record* record = &kh_val_unsafe(entity_map, instance->entity_index, entity);
+    if(src) // TODO Remove this stupid if statement as well
+        kv_rm_at(src->entities, record->index);
+    kv_push(entity_id, dest->entities, entity);
     record->archetype = dest;
-    record->index = dest->components.a[0].count - 1;
+    record->index = kv_size(dest->entities) - 1;
 
     return 1;
 }
@@ -157,6 +160,7 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
     // Initialize type vector
     kv_init(temp->type);
     kv_copy(uint64_t, temp->type, *type);
+    kv_init(temp->entities);
     kv_init(temp->components);
 
     // Initialize component storage
@@ -195,35 +199,6 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
 /// External Function Implementations
 ///
 
-void register_component(ecs_instance* instance, const char* component_name) {
-    entity_id comp_id = create_entity(instance);
-
-    int absent;
-    khint_t key = component_name_map_put(instance->component_names, component_name, &absent);
-    kh_val(instance->component_names, key) = comp_id;
-
-    // Create a column map for the component
-    key = component_map_put(instance->component_index, comp_id, &absent);
-    component_column_map_t* column_map = &kh_val(instance->component_index, key);
-    *column_map = (component_column_map_t) { .km = NULL, .bits = 0, .count = 0, .used = NULL, .keys = NULL };
-
-    /* TODO Add these to a delete component function and check if this is accurate
-     key = component_map_get(instance->component_index, comp_id);
-     if(key != kh_end(instance->component_index)) {
-         free(column_map->used);
-         free(column_map->keys);
-         component_map_del(instance->component_index, key);
-     }
-    */
-}
-
-component_id get_component_id(ecs_instance* instance, const char* component_name) {
-    khint_t key = component_name_map_get(instance->component_names, component_name);
-
-    return (key != kh_end(instance->component_names)) ? kh_val(instance->component_names, key) : INVALID_ID;
-}
-
-/// Creates an ECS instance and returns it
 ecs_instance* ecs_init() {
     ecs_instance* instance = malloc(sizeof(ecs_instance));
     if(instance == NULL)
@@ -244,20 +219,42 @@ ecs_instance* ecs_init() {
         archetype_map_destroy(instance->archetype_index);
     if(instance->component_index)
         component_map_destroy(instance->component_index);
+    if(instance->component_names)
+        component_name_map_destroy(instance->component_names);
     free(instance);
 
     return NULL;
 }
+void ecs_destroy(ecs_instance* instance) {
+    if(instance == NULL)
+        return;
+
+    // TODO Check if there is still a possibly for memory leaks
+
+    entity_map_destroy(instance->entity_index);
+    archetype_map_destroy(instance->archetype_index);
+    component_map_destroy(instance->component_index);
+    component_name_map_destroy(instance->component_names);
+
+    free(instance);
+}
+
+component_id ecs_component_id(ecs_instance* instance, const char* component_name) {
+    khint_t key = component_name_map_get(instance->component_names, component_name);
+
+    return (key != kh_end(instance->component_names)) ? kh_val(instance->component_names, key) : INVALID_ID;
+}
+
 /// Add an entity to the world and returns its ID
-entity_id create_entity(ecs_instance* instance) {
-    fprintf(stderr, "ERR: NOT IMPLEMENTED\n");
+entity_id ecs_entity_create(ecs_instance* instance) {
+    fprintf(stderr, "ERROR: \"create_entity\" NOT IMPLEMENTED\n");
     entity_id eid = 0;
 
     // TODO Finish implementation
     int absent;
     entity_map_put(instance->entity_index, eid, &absent);
     if(!absent) {
-        fprintf(stderr, "ERROR: Entity \"%u\" already exists\n", ENTITY_ID(eid));
+        fprintf(stderr, "ERROR: Entity \"%u\" already exists\n", ecs_id(eid));
         return 1;
     }
     // TODO Add to an 'empty' archetype
@@ -265,12 +262,46 @@ entity_id create_entity(ecs_instance* instance) {
 
     return eid;
 }
+entity_id ecs_entity_copy(ecs_instance* instance, entity_id src) {
+    fprintf(stderr, "ERROR: \"ecs_entity_copy\" NOT IMPLEMENTED");
+
+    entity_id eid = ecs_entity_create(instance);
+
+    // TODO Add component copying
+
+    return INVALID_ID;
+}
+void ecs_entity_destroy(ecs_instance* instance, entity_id entity) {
+    fprintf(stderr, "ERROR: \"ecs_entity_destroy\" NOT IMPLEMENTED");
+}
+
+void ecs_component_register(ecs_instance* instance, const char* component_name, size_t size) {
+    entity_id comp_id = ecs_entity_create(instance);
+
+    int absent;
+    khint_t key = component_name_map_put(instance->component_names, component_name, &absent);
+    kh_val(instance->component_names, key) = comp_id;
+
+    // Create a column map for the component
+    key = component_map_put(instance->component_index, comp_id, &absent);
+    component_column_map_t* column_map = &kh_val(instance->component_index, key);
+    *column_map = (component_column_map_t) { .km = NULL, .bits = 0, .count = 0, .used = NULL, .keys = NULL };
+
+    /* TODO Add these to a delete component function and check if this is accurate
+     key = component_map_get(instance->component_index, comp_id);
+     if(key != kh_end(instance->component_index)) {
+         free(column_map->used);
+         free(column_map->keys);
+         component_map_del(instance->component_index, key);
+     }
+    */
+}
 /// Moves an entity based on the archetype specified in the add edge for `component`
-int add_component(ecs_instance* instance, const entity_id entity, const component_id component) {
+bool ecs_component_add(ecs_instance* instance, const entity_id entity, const component_id component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
-    if(iter == kh_end(instance->entity_index)) {
-        return 0;
-    }
+    if(iter == kh_end(instance->entity_index))
+        return false;
+
     record* record = &kh_val(instance->entity_index, iter);
     archetype* curr_archetype = record->archetype;
 
@@ -298,7 +329,7 @@ int add_component(ecs_instance* instance, const entity_id entity, const componen
     return move_entity(instance, entity, curr_archetype, next_archetype);
 }
 /// The same as add, but uses the remove edge
-int remove_component(ecs_instance* instance, const entity_id entity, const component_id component) {
+bool ecs_component_remove(ecs_instance* instance, const entity_id entity, const component_id component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
     if(iter == kh_end(instance->entity_index)) {
         return 0;
@@ -328,7 +359,13 @@ int remove_component(ecs_instance* instance, const entity_id entity, const compo
     return move_entity(instance, entity, curr_archetype, next_archetype);
 }
 
-void* get_component(ecs_instance* instance, const entity_id entity, const component_id component) {
+void ecs_component_set(ecs_instance* instance, entity_id entity, component_id component, size_t size, const void* data) {
+    void* comp_ptr = ecs_component_get(instance, entity, component);
+
+    memcpy(comp_ptr, data, size);
+}
+
+void* ecs_component_get(ecs_instance* instance, const entity_id entity, const component_id component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
     if(iter == kh_end(instance->entity_index)) {
         return NULL;

@@ -1,4 +1,7 @@
 #include <stdint.h>
+#include <stddef.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <limits.h>
 
 
@@ -11,8 +14,14 @@
 /// Types
 ///
 
+/// Entity identifier, split into the following format
+/// |  Low  |      High     |
+/// | 00-31 | 32-47 | 48-63 |
+/// |  eID  |  Gen  | Flags |
+typedef uint64_t entity_id;
 typedef uint64_t archetype_id;
 typedef uint64_t component_id;
+
 typedef archetype_id* archatype_set; // unordered_set<ArchetypeId>
 
 // Type used to store an array of an unknown component
@@ -28,38 +37,74 @@ typedef struct ecs_instance_t ecs_instance;
 
 
 
-///
-/// EntityId Definitions
-///
-
-/// Entity identifier, split into the following format
-/// |  Low  |      High     |
-/// | 00-31 | 32-47 | 48-63 |
-/// |  eID  |  Gen  | Flags |
-typedef uint64_t entity_id;
-#define ENTITY_ID(id) ((uint32_t) (id))
-#define ENTITY_GENERATION(id) ((uint16_t) ((id) >> 32))
-#define ENTITY_FLAGS(id) ((uint16_t) ((id) >> 48))
 
 
 
-#define COMPONENT_REGISTER(ecs_instance, type) register_component(ecs_instance, #type)
-#define comp_id(ecs_instance, component) get_component_id(ecs_instance, #component)
-
-void register_component(ecs_instance* instance, const char* component_name);
-component_id get_component_id(ecs_instance* instance, const char* component_name);
 
 ///
-/// Functions
+/// API
 ///
 
-/// Initializes an ECS instance
 ecs_instance* ecs_init();
+void ecs_destroy(ecs_instance* instance);
 
-entity_id create_entity(ecs_instance* instance);
+// TODO Possibly this to work on other id's (will require creating a "descriptor" struct)
+component_id ecs_component_id(ecs_instance* instance, const char* component_name);
 
-/// Adds a component to an entity and moves the entity to the respective archetype
-int add_component(ecs_instance* instance, entity_id entity, component_id component);
-/// Removes a component from an entity and moves the entity to the respective archetype
-int remove_component(ecs_instance* instance, entity_id entity, component_id component);
-void* get_component(ecs_instance* instance, entity_id entity, component_id component);
+entity_id ecs_entity_create(ecs_instance* instance);
+entity_id ecs_entity_copy(ecs_instance* instance, entity_id src);
+void ecs_entity_destroy(ecs_instance* instance, entity_id entity);
+
+void ecs_component_register(ecs_instance* instance, const char* component_name, size_t size);
+bool ecs_component_add(ecs_instance* instance, entity_id entity, component_id component);
+bool ecs_component_remove(ecs_instance* instance, entity_id entity, component_id component);
+void ecs_component_set(ecs_instance* instance, entity_id entity, component_id component, size_t size, const void* data);
+void* ecs_component_get(ecs_instance* instance, entity_id entity, component_id component);
+
+
+
+///
+/// Convenience Macro API
+///
+
+/// @brief Register a component to the `ecs_instance`
+/// @param type Component type
+#define COMPONENT_REGISTER(ecs_instance, type) ecs_component_register(ecs_instance, #type, sizeof(type))
+/// @brief Get the actual identifier from an ID
+#define ecs_id(id) ((uint32_t) (id))
+/// @brief Get the generation from an ID
+#define ecs_id_gen(id) ((uint16_t) ((id) >> 32))
+/// @brief Get the flags from an ID
+#define ecs_id_flags(id) ((uint16_t) ((id) >> 48))
+/// @brief Get an ID from a name
+/// @note Only used for components right now
+/// TODO Expand functionality to other types
+#define ecs_id_str(ecs_instance, component) ecs_component_id(ecs_instance, #component)
+/// @brief Get a new entity
+#define ecs_new(ecs_instance) ecs_entity_create(ecs_instance)
+/// @brief Get a copy of an existing entity
+#define ecs_copy(ecs_instance, src) ecs_entity_copy(ecs_instance, src)
+/// @brief Destroy an entity
+#define ecs_dest(ecs_instance, entity) ecs_entity_destroy(ecs_instance, entity)
+/// @brief Add a component to an entity
+/// @param component Component type
+/// @note Zeroes the component data
+#define ecs_add(ecs_instance, entity, component)                                        \
+    ecs_component_add(ecs_instance, entity, ecs_id_str(ecs_instance, #component))
+/// @brief Remove a component from an entity
+/// @param component Component type
+#define ecs_remove(ecs_instance, entity, component)                                        \
+    ecs_component_remove(ecs_instance, entity, ecs_id_str(ecs_instance, #component))
+/// @brief Set an entity's component
+/// @param component Component type
+/// @param __VA_ARGS__ (named)list to write to the component
+/// @note Will overwrite unset data, just like *comp_ptr = (component) { .y = 1, .z = 8 }
+#define ecs_set(ecs_instance, entity, component, ...)                                                                 \
+    ecs_component_set(                                                                                                \
+        ecs_instance, entity, ecs_id_str(ecs_instance, #component), sizeof(component), &(component) __VA_ARGS__ \
+    )
+/// @brief Get a pointer to an entity's component
+/// @param component Component type
+#define ecs_get(ecs_instance, entity, component)                                        \
+    ecs_component_get(ecs_instance, entity, ecs_id_str(ecs_instance, #component))
+
