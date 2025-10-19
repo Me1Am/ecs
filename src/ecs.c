@@ -112,6 +112,16 @@ struct ecs_instance_t {
 
 /// Moves an entity at row `index` from `src` to `dest`
 int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, archetype* dest) {
+    // `dest` is empty, so initialize the columns
+    if(kv_size(dest->entities) == 0) {
+        for(size_t i = 0; i < kv_size(dest->type); i++) {
+            column* comp_col = &kv_A(dest->components, i);
+            comp_col->count = 1;
+            comp_col->allocated = 2;
+            comp_col->elements = malloc(2 * comp_col->element_size);
+        }
+    }
+
     // TODO Remove this stupid if statement once the 'empty' archetype is implemented
     if(src) {
         const size_t min_size =
@@ -151,9 +161,10 @@ int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, 
 /// Create a new Archetype for `type` components
 /// Assumes `type` is sorted
 archetype* archetype_create(ecs_instance* instance, const vec_component_id* type) {
-    archetype* temp = malloc(sizeof(archetype));
-    if(temp == NULL)
-        return NULL;
+    // Add new archetype to the global archetype index
+    int ret;
+    khint_t iter = archetype_map_put(instance->archetype_index, *type, &ret);
+    archetype* temp = &kh_val(instance->archetype_index, iter);
 
     /// TODO Implement a archetype_id creation
 
@@ -165,11 +176,9 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
 
     // Initialize component storage
     for(size_t i = 0; i < temp->type.n; i++) {
-        column col = (column) { .elements = malloc(0),
-                                .element_size = 2 * sizeof(float), // TODO: Get actual component size
-                                .count = 0 };
-
-        kv_push(column, temp->components, col);
+        // TODO Get actual component size
+        kv_push(column, temp->components, (column) { .element_size = 2 * sizeof(float) });
+        kv_A(temp->components, i).elements = NULL;
 
         // Add new archetype to the component's column map
         int absent;
@@ -180,19 +189,17 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
         kh_val(column_map, key) = i;
     }
 
-    // Add new archetype to the global archetype index
-    int ret;
-    khint_t iter = archetype_map_put(instance->archetype_index, temp->type, &ret);
-    if(ret == 0) {
-        free(temp);
-        return NULL;
-    }
-    kh_val(instance->archetype_index, iter) = *temp;
-
-
     return temp;
 }
 
+#define archetype_destroy(archetype)                                \
+    do {                                                            \
+        kv_destroy((archetype).type);                               \
+        kv_destroy((archetype).entities);                           \
+        for(size_t i = 0; i < kv_size((archetype).components); i++) \
+            free(kv_A((archetype).components, i).elements);         \
+        kv_destroy((archetype).components);                         \
+    } while(0)
 
 
 ///
@@ -229,11 +236,20 @@ void ecs_destroy(ecs_instance* instance) {
     if(instance == NULL)
         return;
 
-    // TODO Check if there is still a possibly for memory leaks
-
     entity_map_destroy(instance->entity_index);
+
+    khint_t key;
+    kh_foreach(instance->archetype_index, key)
+        archetype_destroy(kh_val(instance->archetype_index, key));
     archetype_map_destroy(instance->archetype_index);
+
+    kh_foreach(instance->component_index, key) {
+        component_column_map_t* column_map = &kh_val(instance->component_index, key);
+        free(column_map->used);
+        free(column_map->keys);
+    }
     component_map_destroy(instance->component_index);
+
     component_name_map_destroy(instance->component_names);
 
     free(instance);
@@ -247,7 +263,7 @@ component_id ecs_component_id(ecs_instance* instance, const char* component_name
 
 /// Add an entity to the world and returns its ID
 entity_id ecs_entity_create(ecs_instance* instance) {
-    fprintf(stderr, "ERROR: \"create_entity\" NOT IMPLEMENTED\n");
+    fprintf(stderr, "ERROR: \"ecs_entity_create\" NOT IMPLEMENTED\n");
     entity_id eid = 0;
 
     // TODO Finish implementation
@@ -361,7 +377,6 @@ bool ecs_component_remove(ecs_instance* instance, const entity_id entity, const 
 
 void ecs_component_set(ecs_instance* instance, entity_id entity, component_id component, size_t size, const void* data) {
     void* comp_ptr = ecs_component_get(instance, entity, component);
-
     memcpy(comp_ptr, data, size);
 }
 
@@ -377,7 +392,6 @@ void* ecs_component_get(ecs_instance* instance, const entity_id entity, const co
     size_t col = kh_val_unsafe(component_column_map, archetypes, archetype->id);
 
     column* comp_col = &kv_A(archetype->components, col);
-    void* comp = (uintptr_t*) comp_col + (record.index * comp_col->element_size);
-
+    void* comp = (uintptr_t*) comp_col->elements + (record.index * comp_col->element_size);
     return comp;
 }

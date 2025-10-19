@@ -31,5 +31,6 @@ int main(int argc, char** argv) {
     comp->x = 12441.f;
     printf("%f, %f\n", comp->x, comp->y);
 
+    ecs_destroy(world);
     return 0;
 }
