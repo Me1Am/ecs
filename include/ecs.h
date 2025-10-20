@@ -93,18 +93,18 @@ void* ecs_component_get(ecs_instance* instance, entity_id entity, component_id c
 /// @brief Add a component to an entity
 /// @param component Component type
 /// @note Zeroes the component data
-#define ecs_add(ecs_instance, entity, component) ecs_component_add(ecs_instance, entity, ecs_id_str(ecs_instance, #component))
+#define ecs_add(ecs_instance, entity, component) ecs_component_add(ecs_instance, entity, ecs_id_str(ecs_instance, component))
 /// @brief Remove a component from an entity
 /// @param component Component type
 #define ecs_remove(ecs_instance, entity, component)                                  \
-    ecs_component_remove(ecs_instance, entity, ecs_id_str(ecs_instance, #component))
+    ecs_component_remove(ecs_instance, entity, ecs_id_str(ecs_instance, component))
 /// @brief Set an entity's component
 /// @param component Component type
 /// @param __VA_ARGS__ (named)list to write to the component
 /// @note Will overwrite unset data, just like *comp_ptr = (component) { .y = 1, .z = 8 }
 #define ecs_set(ecs_instance, entity, component, ...)                                                                          \
-    ecs_component_set(ecs_instance, entity, ecs_id_str(ecs_instance, #component), sizeof(component), &(component) __VA_ARGS__)
+    ecs_component_set(ecs_instance, entity, ecs_id_str(ecs_instance, component), sizeof(component), &(component) __VA_ARGS__)
 /// @brief Get a pointer to an entity's component
 /// @param component Component type
-#define ecs_get(ecs_instance, entity, component) ecs_component_get(ecs_instance, entity, ecs_id_str(ecs_instance, #component))
+#define ecs_get(ecs_instance, entity, component) ecs_component_get(ecs_instance, entity, ecs_id_str(ecs_instance, component))
 
