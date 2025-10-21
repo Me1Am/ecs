@@ -11,6 +11,9 @@
 
 
 
+/// Always zero because it's the first component created
+#define SIZE_COMPONENT_ID 0
+
 /// Get a value from the given key
 /// Performs no bounds checks
 #define kh_val_unsafe(name, h, key) kh_val(h, name##_get(h, key))
@@ -27,6 +30,10 @@
     } while(0)
 
 
+
+typedef struct {
+    size_t size;
+} __intern_comp_size;
 
 struct archetype_edge {
     archetype* add;
@@ -57,10 +64,10 @@ struct record_t {
 };
 
 khint_t uint64_vec_hash(const vec_uint64_t vec) {
-    return kh_hash_bytes(vec.n, (uint8_t*) vec.a);
+    return kh_hash_bytes(vec.n * sizeof(uint64_t), (uint8_t*) vec.a);
 }
 khint_t uint64_vec_compare(const vec_uint64_t a, const vec_uint64_t b) {
-    return (a.n == b.n) ? (memcmp(a.a, b.a, a.n) == 0) : 0;
+    return (a.n == b.n) ? (memcmp(a.a, b.a, a.n * sizeof(uint64_t)) == 0) : 0;
 }
 static inline int uint64_compare(const void* a, const void* b) {
     uint64_t ua = *(const uint64_t*) a;
@@ -114,13 +121,22 @@ struct ecs_instance_t {
 /// Internal Function Implementations
 ///
 
+#define archetype_destroy(archetype)                                \
+    do {                                                            \
+        kv_destroy((archetype).type);                               \
+        kv_destroy((archetype).entities);                           \
+        for(size_t i = 0; i < kv_size((archetype).components); i++) \
+            free(kv_A((archetype).components, i).elements);         \
+        kv_destroy((archetype).components);                         \
+    } while(0)
+
 /// Moves an entity at row `index` from `src` to `dest`
 int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, archetype* dest) {
     // `dest` is empty, so initialize the columns
     if(kv_size(dest->entities) == 0) {
         for(size_t i = 0; i < kv_size(dest->type); i++) {
             column* comp_col = &kv_A(dest->components, i);
-            comp_col->count = 1;
+            comp_col->count = 0;
             comp_col->allocated = 2;
             comp_col->elements = malloc(2 * comp_col->element_size);
         }
@@ -131,6 +147,7 @@ int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, 
         const size_t min_size =
             (kv_size(dest->components) < kv_size(src->components)) ? kv_size(dest->components) : kv_size(src->components);
         for(size_t i = 0; i < min_size; i++) {
+            // TODO Test this when types are in mismatched indicies (breaks i think)
             if(kv_A(src->type, i) == kv_A(dest->type, i)) {
                 if(dest->components.a[i].count == dest->components.a[i].allocated) {
                     void* temp = realloc(
@@ -151,11 +168,34 @@ int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, 
                 );
             }
         }
+    } else {
+        // 'src' doesn't exist, but we still need to ensure there're slots in `dest`
+        for(size_t i = 0; i < kv_size(dest->components); i++) {
+            if(kv_A(dest->components, i).count == kv_A(dest->components, i).allocated) {
+                void* temp = realloc(
+                    kv_A(dest->components, i).elements,
+                    kv_A(dest->components, i).allocated * 2 * kv_A(dest->components, i).element_size
+                );
+                if(temp == NULL)
+                    return 0;
+
+                kv_A(dest->components, i).elements = temp;
+                kv_A(dest->components, i).allocated *= 2;
+            }
+            kv_A(dest->components, i).count++;
+        }
     }
 
     record* record = &kh_val_unsafe(entity_map, instance->entity_index, entity);
-    if(src) // TODO Remove this stupid if statement as well
+    if(src) { // TODO Remove this stupid if statement as well
         kv_rm_at(src->entities, record->index);
+
+        if(kv_size(src->entities) == 0) {
+            khint_t key = archetype_map_get(instance->archetype_index, src->type);
+            archetype_destroy(kh_val(instance->archetype_index, key));
+            archetype_map_del(instance->archetype_index, key);
+        }
+    }
     kv_push(entity_id, dest->entities, entity);
     record->archetype = dest;
     record->index = kv_size(dest->entities) - 1;
@@ -165,23 +205,27 @@ int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, 
 /// Create a new Archetype for `type` components
 /// Assumes `type` is sorted
 archetype* archetype_create(ecs_instance* instance, const vec_component_id* type) {
+    vec_component_id type_cpy;
+    kv_copy(component_id, type_cpy, *type);
+
     // Add new archetype to the global archetype index
     int ret;
-    khint_t iter = archetype_map_put(instance->archetype_index, *type, &ret);
+    khint_t iter = archetype_map_put(instance->archetype_index, type_cpy, &ret);
     archetype* temp = &kh_val(instance->archetype_index, iter);
 
-    /// TODO Implement a archetype_id creation
+    temp->id = ecs_entity_create(instance);
 
-    // Initialize type vector
-    kv_init(temp->type);
-    kv_copy(uint64_t, temp->type, *type);
+    temp->type = type_cpy;
     kv_init(temp->entities);
     kv_init(temp->components);
 
     // Initialize component storage
     for(size_t i = 0; i < temp->type.n; i++) {
-        // TODO Get actual component size
-        kv_push(column, temp->components, (column) { .element_size = 2 * sizeof(float) });
+        // Bit of a hacky fix to allow registering the __intern_comp_size component (which doesn't have its size)
+        size_t comp_size = (kv_A(type_cpy, i) == SIZE_COMPONENT_ID)
+                               ? sizeof(__intern_comp_size)
+                               : ((__intern_comp_size*) ecs_get(instance, kv_A(type_cpy, i), __intern_comp_size))->size;
+        kv_push(column, temp->components, (column) { .element_size = comp_size });
         kv_A(temp->components, i).elements = NULL;
 
         // Add new archetype to the component's column map
@@ -196,14 +240,6 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
     return temp;
 }
 
-#define archetype_destroy(archetype)                                \
-    do {                                                            \
-        kv_destroy((archetype).type);                               \
-        kv_destroy((archetype).entities);                           \
-        for(size_t i = 0; i < kv_size((archetype).components); i++) \
-            free(kv_A((archetype).components, i).elements);         \
-        kv_destroy((archetype).components);                         \
-    } while(0)
 
 
 ///
@@ -222,8 +258,11 @@ ecs_instance* ecs_init() {
     kv_init(instance->id_graveyard);
     instance->next_id = 0;
 
-    if(instance->entity_index && instance->archetype_index && instance->component_index && instance->component_names)
+    if(instance->entity_index && instance->archetype_index && instance->component_index && instance->component_names) {
+        COMPONENT_REGISTER(instance, __intern_comp_size);
+
         return instance;
+    }
 
     // Free memory
     if(instance->entity_index)
@@ -274,7 +313,8 @@ entity_id ecs_entity_create(ecs_instance* instance) {
     if(kv_size(instance->id_graveyard) > 0)
         eid = kv_pop(instance->id_graveyard);
     else
-        eid = ((entity_id)instance->next_id++) << 32;
+        eid = ((entity_id) instance->next_id++) << 32;
+    printf("New Entt: %016lx\n", eid); // DEBUG PRINT
 
     // TODO Finish implementation
     int absent;
@@ -297,7 +337,7 @@ entity_id ecs_entity_copy(ecs_instance* instance, entity_id src) {
 void ecs_entity_destroy(ecs_instance* instance, entity_id entity) {
     fprintf(stderr, "ERROR: \"ecs_entity_destroy\" NOT IMPLEMENTED");
 
-    entity &= 0xFFFFFFFF00000000;   // Reset flags
+    entity &= 0xFFFFFFFF00000000; // Reset flags
     ecs_id_gen_set(entity, ecs_id_gen(entity) + 1);
     kv_push(entity_id, instance->id_graveyard, entity);
 }
@@ -313,6 +353,9 @@ void ecs_component_register(ecs_instance* instance, const char* component_name, 
     key = component_map_put(instance->component_index, comp_id, &absent);
     component_column_map_t* column_map = &kh_val(instance->component_index, key);
     *column_map = (component_column_map_t) { .km = NULL, .bits = 0, .count = 0, .used = NULL, .keys = NULL };
+
+    ecs_add(instance, comp_id, __intern_comp_size);
+    ecs_set(instance, comp_id, __intern_comp_size, { .size = size });
 
     /* TODO Add these to a delete component function and check if this is accurate
      key = component_map_get(instance->component_index, comp_id);
@@ -344,6 +387,13 @@ bool ecs_component_add(ecs_instance* instance, const entity_id entity, const com
         kv_push(uint64_t, new_type, component);
     }
 
+#ifdef DEBUG_COMPONENTS
+    printf("new_type: ");
+    for(size_t i = 0; i < new_type.n; i++)
+        printf("%016lx, ", kv_A(new_type, i));
+    printf("\n");
+#endif
+
     // Get the new archetype, create one if necessary
     archetype* next_archetype;
     iter = archetype_map_get(instance->archetype_index, new_type);
@@ -351,6 +401,7 @@ bool ecs_component_add(ecs_instance* instance, const entity_id entity, const com
         next_archetype = archetype_create(instance, &new_type);
     else
         next_archetype = &kh_val(instance->archetype_index, iter);
+
     kv_destroy(new_type);
 
     return move_entity(instance, entity, curr_archetype, next_archetype);
@@ -388,6 +439,7 @@ bool ecs_component_remove(ecs_instance* instance, const entity_id entity, const 
 
 void ecs_component_set(ecs_instance* instance, entity_id entity, component_id component, size_t size, const void* data) {
     void* comp_ptr = ecs_component_get(instance, entity, component);
+
     memcpy(comp_ptr, data, size);
 }
 
@@ -403,6 +455,18 @@ void* ecs_component_get(ecs_instance* instance, const entity_id entity, const co
     size_t col = kh_val_unsafe(component_column_map, archetypes, archetype->id);
 
     column* comp_col = &kv_A(archetype->components, col);
-    void* comp = (uintptr_t*) comp_col->elements + (record.index * comp_col->element_size);
+    void* comp = (void*) ((uintptr_t) comp_col->elements + (record.index * comp_col->element_size));
+
+#ifdef DEBUG_COMPONENTS
+    printf(
+        "The arithmatic: (uint64ptr_t*)%p + (%lu(index) * %lu(size))\nResulting in %p a %04lx difference\n",
+        comp_col->elements,
+        record.index,
+        comp_col->element_size,
+        comp,
+        (uintptr_t) comp - (uintptr_t) comp_col->elements
+    );
+#endif
+
     return comp;
 }
