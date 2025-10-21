@@ -83,7 +83,7 @@ static inline int uint64_compare(const void* a, const void* b) {
 KHASHL_MAP_INIT(KH_LOCAL, entity_map_t, entity_map, uint64_t, record, kh_hash_uint64, kh_eq_generic)
 // Maps a vector of ComponentIds to an Archetype
 // Used to find an archetype by its list of components
-KHASHL_MAP_INIT(KH_LOCAL, archetype_map_t, archetype_map, vec_component_id, archetype, uint64_vec_hash, uint64_vec_compare)
+KHASHL_MAP_INIT(KH_LOCAL, archetype_map_t, archetype_map, vec_component_id, archetype*, uint64_vec_hash, uint64_vec_compare)
 // Maps ArchetypeId to a column (size_t)
 // Used to find a component's column in a given archetype that it is a part of
 // Used in component_index
@@ -121,13 +121,14 @@ struct ecs_instance_t {
 /// Internal Function Implementations
 ///
 
-#define archetype_destroy(archetype)                                \
-    do {                                                            \
-        kv_destroy((archetype).type);                               \
-        kv_destroy((archetype).entities);                           \
-        for(size_t i = 0; i < kv_size((archetype).components); i++) \
-            free(kv_A((archetype).components, i).elements);         \
-        kv_destroy((archetype).components);                         \
+#define archetype_destroy(archetype)                                 \
+    do {                                                             \
+        kv_destroy((archetype)->type);                               \
+        kv_destroy((archetype)->entities);                           \
+        for(size_t i = 0; i < kv_size((archetype)->components); i++) \
+            free(kv_A((archetype)->components, i).elements);         \
+        kv_destroy((archetype)->components);                         \
+        free(archetype);                                             \
     } while(0)
 
 /// Moves an entity at row `index` from `src` to `dest`
@@ -191,7 +192,13 @@ int move_entity(ecs_instance* instance, const entity_id entity, archetype* src, 
         kv_rm_at(src->entities, record->index);
 
         if(kv_size(src->entities) == 0) {
-            khint_t key = archetype_map_get(instance->archetype_index, src->type);
+            khint_t key;
+            for(size_t i = 0; i < kv_size(src->type); i++) {
+                component_archetypes* archetypes = &kh_val_unsafe(component_map, instance->component_index, kv_A(src->type, i));
+                key = component_column_map_get(archetypes, src->id);
+                component_column_map_del(archetypes, key);
+            }
+            key = archetype_map_get(instance->archetype_index, src->type);
             archetype_destroy(kh_val(instance->archetype_index, key));
             archetype_map_del(instance->archetype_index, key);
         }
@@ -211,7 +218,8 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
     // Add new archetype to the global archetype index
     int ret;
     khint_t iter = archetype_map_put(instance->archetype_index, type_cpy, &ret);
-    archetype* temp = &kh_val(instance->archetype_index, iter);
+    archetype* temp = (archetype*) malloc(sizeof(archetype));
+    kh_val(instance->archetype_index, iter) = temp;
 
     temp->id = ecs_entity_create(instance);
 
@@ -226,6 +234,7 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
                                ? sizeof(__intern_comp_size)
                                : ((__intern_comp_size*) ecs_get(instance, kv_A(type_cpy, i), __intern_comp_size))->size;
         kv_push(column, temp->components, (column) { .element_size = comp_size });
+        // TODO Efficiency boost: Move the first 'if' from move_entity here, archetypes are created when NEEDED, so preallocate
         kv_A(temp->components, i).elements = NULL;
 
         // Add new archetype to the component's column map
@@ -235,6 +244,11 @@ archetype* archetype_create(ecs_instance* instance, const vec_component_id* type
 
         key = component_column_map_put(column_map, temp->id, &absent);
         kh_val(column_map, key) = i;
+
+#ifdef DEBUG_COMPONENTS
+        printf("Initializing Components for archetype %016lx\n", temp->id);
+        printf("    Comp: %016lx | Size: %lu | Index: %lu\n", kv_A(type_cpy, i), comp_size, i);
+#endif
     }
 
     return temp;
@@ -400,7 +414,7 @@ bool ecs_component_add(ecs_instance* instance, const entity_id entity, const com
     if(iter == kh_end(instance->archetype_index))
         next_archetype = archetype_create(instance, &new_type);
     else
-        next_archetype = &kh_val(instance->archetype_index, iter);
+        next_archetype = kh_val(instance->archetype_index, iter);
 
     kv_destroy(new_type);
 
@@ -431,7 +445,7 @@ bool ecs_component_remove(ecs_instance* instance, const entity_id entity, const 
     if(iter == kh_end(instance->archetype_index))
         next_archetype = archetype_create(instance, &new_type);
     else
-        next_archetype = &kh_val(instance->archetype_index, iter);
+        next_archetype = kh_val(instance->archetype_index, iter);
     kv_destroy(new_type);
 
     return move_entity(instance, entity, curr_archetype, next_archetype);
@@ -445,9 +459,8 @@ void ecs_component_set(ecs_instance* instance, entity_id entity, component_id co
 
 void* ecs_component_get(ecs_instance* instance, const entity_id entity, const component_id component) {
     khint_t iter = entity_map_get(instance->entity_index, entity);
-    if(iter == kh_end(instance->entity_index)) {
+    if(iter == kh_end(instance->entity_index))
         return NULL;
-    }
     record record = kh_val(instance->entity_index, iter);
 
     archetype* archetype = record.archetype;
